@@ -1,29 +1,7 @@
- grep -o "^[^:]*" /etc/passwd | sort 
-alpm
-avahi
-azot
-bin
-cups
-cups-browsed
-daemon
-dbus
-ftp
-git
-http
-mail
-nobody
-openvpn
-pcscd
-polkitd
-root
-sddm
-systemd-coredump
-systemd-imds
-systemd-journal-remote
-systemd-network
-systemd-oom
-systemd-resolve
-systemd-timesync
-_talkd
-tss
-uuidd
+задание 1:
+    grep -o "^[^:]*" /etc/passwd | sort 
+
+задание 2:
+    cat /etc/protocols | sort -k2 -nr | head -5 | awk '{print $2, $1}'
+
+задание 3:
