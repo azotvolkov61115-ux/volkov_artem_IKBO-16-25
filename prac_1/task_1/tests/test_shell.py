@@ -96,6 +96,26 @@ class StartupTests(unittest.TestCase):
         self.assertIn("sample:/$ ls", output)
         self.assertIn("sample:/$ ", output)
 
+    def test_default_demo_script_succeeds_and_enters_repl(self) -> None:
+        project_dir = Path(__file__).parents[1]
+        output_stream = io.StringIO()
+
+        with patch("sys.stdout", output_stream), patch("sys.stdin", io.StringIO("exit\n")):
+            status = main(
+                [
+                    "--vfs",
+                    str(project_dir / "vfs.json"),
+                    "--script",
+                    str(project_dir / "scripts/demo.txt"),
+                ]
+            )
+
+        self.assertEqual(status, 0)
+        output = output_stream.getvalue()
+        self.assertIn('vfs:/$ cd "/"', output)
+        self.assertIn("vfs:/$ pwd", output)
+        self.assertGreaterEqual(output.count("vfs:/$ "), 4)
+
     def test_missing_vfs_returns_error_without_starting_shell(self) -> None:
         output_stream = io.StringIO()
         error_stream = io.StringIO()
@@ -364,6 +384,161 @@ class BasicFileSystemCommandTests(unittest.TestCase):
         self.assertIn("apple\nbanana\napple\n", result)
         self.assertIn("Ошибка:", result)
         self.assertNotIn("sample:/$ exit", result)
+
+
+class FileOperationCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.filesystem = VirtualFileSystem.load(
+            Path(__file__).parents[1] / "data/vfs_sample.json"
+        )
+        self.output = io.StringIO()
+
+    def run_command(self, command: str, *arguments: str) -> CommandStatus:
+        return execute_command(command, arguments, self.output, self.filesystem)
+
+    def test_cp_copies_to_new_file_and_existing_directory(self) -> None:
+        source = self.filesystem.resolve("/home/student/notes.txt")
+        original_content = source["content"]
+
+        self.assertIs(
+            self.run_command("cp", "/home/student/notes.txt", "/home/student/notes-copy.txt"),
+            CommandStatus.CONTINUE,
+        )
+        copied_file = self.filesystem.resolve("/home/student/notes-copy.txt")
+        self.assertEqual(copied_file["content"], original_content)
+        self.assertEqual(copied_file["owner"], source["owner"])
+        self.assertEqual(source["content"], original_content)
+
+        self.output = io.StringIO()
+        self.assertIs(
+            self.run_command("cp", "/home/student/notes.txt", "/tmp/"),
+            CommandStatus.CONTINUE,
+        )
+        self.assertEqual(self.filesystem.resolve("/tmp/notes.txt")["content"], original_content)
+
+        self.output = io.StringIO()
+        self.assertIs(
+            self.run_command("cp", "/home/student/notes.txt", "/home"),
+            CommandStatus.CONTINUE,
+        )
+        self.assertEqual(self.filesystem.resolve("/home/notes.txt")["content"], original_content)
+
+    def test_cp_supports_relative_paths_from_current_directory(self) -> None:
+        self.filesystem.change_directory("/home/student")
+
+        self.assertIs(self.run_command("cp", "notes.txt", "relative-copy.txt"), CommandStatus.CONTINUE)
+        self.assertEqual(
+            self.filesystem.resolve("relative-copy.txt")["content"],
+            self.filesystem.resolve("notes.txt")["content"],
+        )
+
+    def test_cp_rejects_directories_missing_sources_and_existing_destinations(self) -> None:
+        self.assertIs(self.run_command("cp", "/home", "/tmp/home-copy"), CommandStatus.ERROR)
+        self.assertIn("не является файлом", self.output.getvalue())
+
+        self.output = io.StringIO()
+        self.assertIs(
+            self.run_command("cp", "/missing.txt", "/tmp/copy.txt"),
+            CommandStatus.ERROR,
+        )
+        self.assertIn("путь не найден", self.output.getvalue())
+
+        self.output = io.StringIO()
+        self.assertIs(
+            self.run_command("cp", "/home/student/notes.txt", "/home/readme.txt"),
+            CommandStatus.ERROR,
+        )
+        self.assertIn("объект уже существует", self.output.getvalue())
+        self.assertEqual(
+            self.filesystem.resolve("/home/readme.txt")["content"],
+            "Sample virtual filesystem.\n",
+        )
+
+    def test_cp_rejects_missing_destination_directory_and_bad_argument_count(self) -> None:
+        self.assertIs(
+            self.run_command("cp", "/home/student/notes.txt", "/missing/copy.txt"),
+            CommandStatus.ERROR,
+        )
+        self.assertIn("путь не найден", self.output.getvalue())
+
+        self.output = io.StringIO()
+        self.assertIs(self.run_command("cp", "notes.txt"), CommandStatus.ERROR)
+        self.assertIn("использование", self.output.getvalue())
+
+    def test_chown_changes_file_and_directory_owners(self) -> None:
+        self.assertIs(
+            self.run_command("chown", "new student", "/home/student/notes.txt"),
+            CommandStatus.CONTINUE,
+        )
+        self.assertEqual(
+            self.filesystem.resolve("/home/student/notes.txt")["owner"],
+            "new student",
+        )
+
+        self.assertIs(
+            self.run_command("chown", "staff", "/home/student"),
+            CommandStatus.CONTINUE,
+        )
+        self.assertEqual(self.filesystem.resolve("/home/student")["owner"], "staff")
+
+    def test_chown_reports_missing_path_empty_owner_and_bad_argument_count(self) -> None:
+        self.assertIs(self.run_command("chown", "staff", "/missing"), CommandStatus.ERROR)
+        self.assertIn("путь не найден", self.output.getvalue())
+
+        self.output = io.StringIO()
+        self.assertIs(self.run_command("chown", "", "/home"), CommandStatus.ERROR)
+        self.assertIn("владелец не может быть пустым", self.output.getvalue())
+
+        self.output = io.StringIO()
+        self.assertIs(self.run_command("chown", "staff"), CommandStatus.ERROR)
+        self.assertIn("использование", self.output.getvalue())
+
+    def test_file_changes_stay_in_memory_until_saved(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            input_path = Path(directory) / "input.json"
+            save_path = Path(directory) / "saved.json"
+            input_path.write_text(
+                (Path(__file__).parents[1] / "data/vfs_sample.json").read_text(
+                    encoding="utf-8"
+                ),
+                encoding="utf-8",
+            )
+            original_json = input_path.read_text(encoding="utf-8")
+            filesystem = VirtualFileSystem.load(input_path)
+
+            filesystem.copy_file("/home/student/notes.txt", "/home/student/copy.txt")
+            filesystem.change_owner("reviewer", "/home/student/copy.txt")
+
+            self.assertEqual(input_path.read_text(encoding="utf-8"), original_json)
+            filesystem.save(save_path)
+
+            saved_filesystem = VirtualFileSystem.load(save_path)
+
+        saved_copy = saved_filesystem.resolve("/home/student/copy.txt")
+        self.assertEqual(saved_copy["owner"], "reviewer")
+        self.assertEqual(saved_copy["content"], "First line\nSecond line\n")
+
+    def test_demo_script_runs_copy_and_chown_then_stops_on_expected_error(self) -> None:
+        filesystem = VirtualFileSystem.load(
+            Path(__file__).parents[1] / "data/vfs_sample.json"
+        )
+        output = io.StringIO()
+        script_path = Path(__file__).parents[1] / "scripts/demo_file_operations.txt"
+
+        status = run_script(str(script_path), "sample", output, filesystem)
+
+        self.assertIs(status, CommandStatus.ERROR)
+        self.assertEqual(
+            filesystem.resolve("/home/student/notes copy.txt")["owner"],
+            "reviewer",
+        )
+        self.assertEqual(
+            filesystem.resolve("/tmp/duplicates.txt")["owner"],
+            "staff",
+        )
+        self.assertIn("Файл скопирован", output.getvalue())
+        self.assertIn("Владелец объекта изменен", output.getvalue())
+        self.assertIn("Ошибка:", output.getvalue())
 
 
 if __name__ == "__main__":

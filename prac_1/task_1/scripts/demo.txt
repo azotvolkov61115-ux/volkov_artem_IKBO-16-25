@@ -1,5 +1,4 @@
 
 ls
-cd "folder with spaces"
-exit
-ls
+cd "/"
+pwd

@@ -21,7 +21,7 @@ def execute_command(
     if command == "exit":
         return CommandStatus.EXIT
 
-    if filesystem is None and command in {"ls", "cd", "pwd", "uniq"}:
+    if filesystem is None and command in {"ls", "cd", "pwd", "uniq", "cp", "chown"}:
         print("Ошибка: VFS не загружена", file=output)
         return CommandStatus.ERROR
 
@@ -91,6 +91,30 @@ def execute_command(
             if comparison_line != previous_line:
                 output.write(line)
             previous_line = comparison_line
+        return CommandStatus.CONTINUE
+
+    if command == "cp":
+        if len(arguments) != 2:
+            print("Ошибка: использование: cp ИСХОДНЫЙ_ФАЙЛ НАЗНАЧЕНИЕ", file=output)
+            return CommandStatus.ERROR
+        try:
+            copied_path = filesystem.copy_file(arguments[0], arguments[1])
+        except FileSystemError as error:
+            print(f"Ошибка: {error}", file=output)
+            return CommandStatus.ERROR
+        print(f"Файл скопирован: {copied_path}", file=output)
+        return CommandStatus.CONTINUE
+
+    if command == "chown":
+        if len(arguments) != 2:
+            print("Ошибка: использование: chown ВЛАДЕЛЕЦ ПУТЬ", file=output)
+            return CommandStatus.ERROR
+        try:
+            filesystem.change_owner(arguments[0], arguments[1])
+        except FileSystemError as error:
+            print(f"Ошибка: {error}", file=output)
+            return CommandStatus.ERROR
+        print(f"Владелец объекта изменен: {arguments[1]}", file=output)
         return CommandStatus.CONTINUE
 
     if command in {"vfs-save", "vfs-init"}:

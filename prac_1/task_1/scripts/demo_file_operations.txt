@@ -1,0 +1,9 @@
+cd /home/student
+cp notes.txt "notes copy.txt"
+cp duplicates.txt /tmp/
+chown reviewer "notes copy.txt"
+chown staff /tmp/duplicates.txt
+ls .
+ls /tmp
+cp missing.txt "missing copy.txt"
+exit
