@@ -5,9 +5,13 @@ from pathlib import Path
 from unittest.mock import patch
 
 from command_parser import CommandParseError, parse_command
-from commands import CommandStatus
+from commands import CommandStatus, execute_command
+from filesystem import FileSystemError, VirtualFileSystem
 from main import main
 from shell import run_script, run_shell
+
+
+VALID_VFS = '{"name": "/", "type": "directory", "owner": "root", "children": {}}'
 
 
 class CommandParserTests(unittest.TestCase):
@@ -71,7 +75,7 @@ class StartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             vfs_path = Path(directory) / "sample.json"
             script_path = Path(directory) / "commands.txt"
-            vfs_path.write_text("{}", encoding="utf-8")
+            vfs_path.write_text(VALID_VFS, encoding="utf-8")
             script_path.write_text("ls\n", encoding="utf-8")
             output_stream = io.StringIO()
 
@@ -98,7 +102,7 @@ class StartupTests(unittest.TestCase):
     def test_missing_script_returns_error_without_starting_shell(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             vfs_path = Path(directory) / "sample.json"
-            vfs_path.write_text("{}", encoding="utf-8")
+            vfs_path.write_text(VALID_VFS, encoding="utf-8")
             output_stream = io.StringIO()
             error_stream = io.StringIO()
 
@@ -113,7 +117,7 @@ class StartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             vfs_path = Path(directory) / "sample.json"
             script_path = Path(directory) / "commands.txt"
-            vfs_path.write_text("{}", encoding="utf-8")
+            vfs_path.write_text(VALID_VFS, encoding="utf-8")
             script_path.write_text("unknown\n", encoding="utf-8")
             output_stream = io.StringIO()
             error_stream = io.StringIO()
@@ -124,6 +128,116 @@ class StartupTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("Ошибка: неизвестная команда: unknown", output_stream.getvalue())
         self.assertEqual(output_stream.getvalue().count("sample:/$ "), 1)
+
+
+class VirtualFileSystemTests(unittest.TestCase):
+    def test_loads_valid_vfs_and_resolves_absolute_and_relative_paths(self) -> None:
+        filesystem = VirtualFileSystem.load(Path(__file__).parents[1] / "data/vfs_sample.json")
+        filesystem.change_directory("/home/student")
+
+        self.assertEqual(filesystem.resolve("notes.txt")["content"], "First line\nSecond line\n")
+        self.assertEqual(
+            filesystem.resolve("../readme.txt")["content"],
+            "Sample virtual filesystem.\n",
+        )
+        self.assertEqual(filesystem.resolve("/home/student")["type"], "directory")
+        self.assertEqual(filesystem.resolve(".")["name"], "student")
+
+    def test_rejects_paths_above_root(self) -> None:
+        filesystem = VirtualFileSystem.load(Path(__file__).parents[1] / "vfs.json")
+        with self.assertRaisesRegex(FileSystemError, "выше корня"):
+            filesystem.resolve("../home")
+
+    def test_load_errors_are_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing_path = Path(directory) / "missing.json"
+            with self.assertRaisesRegex(FileSystemError, "не найден"):
+                VirtualFileSystem.load(missing_path)
+
+            malformed_path = Path(directory) / "malformed.json"
+            malformed_path.write_text('{"name":', encoding="utf-8")
+            with self.assertRaisesRegex(FileSystemError, "не удалось прочитать VFS"):
+                VirtualFileSystem.load(malformed_path)
+
+            missing_fields_path = Path(directory) / "missing-fields.json"
+            missing_fields_path.write_text('{"name": "/"}', encoding="utf-8")
+            with self.assertRaisesRegex(FileSystemError, "отсутствует поле"):
+                VirtualFileSystem.load(missing_fields_path)
+
+            unknown_type_path = Path(directory) / "unknown-type.json"
+            unknown_type_path.write_text(
+                '{"name": "/", "type": "directory", "owner": "root", '
+                '"children": {"item": {"name": "item", "type": "socket", "owner": "root"}}}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(FileSystemError, "неизвестный тип"):
+                VirtualFileSystem.load(unknown_type_path)
+
+            invalid_root_path = Path(directory) / "invalid-root.json"
+            invalid_root_path.write_text(
+                '{"name": "/", "type": "file", "owner": "root", "content": "not a root"}',
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(FileSystemError, "корень VFS"):
+                VirtualFileSystem.load(invalid_root_path)
+
+    def test_save_and_reload_preserves_vfs(self) -> None:
+        filesystem = VirtualFileSystem.load(Path(__file__).parents[1] / "data/vfs_sample.json")
+        with tempfile.TemporaryDirectory() as directory:
+            saved_path = Path(directory) / "saved.json"
+            filesystem.save(saved_path)
+            reloaded = VirtualFileSystem.load(saved_path)
+
+        self.assertEqual(reloaded.root, filesystem.root)
+
+    def test_reset_restores_project_default_without_writing_to_disk(self) -> None:
+        source_path = Path(__file__).parents[1] / "data/vfs_sample.json"
+        original_contents = source_path.read_text(encoding="utf-8")
+        filesystem = VirtualFileSystem.load(source_path)
+        filesystem.current_directory = "/home"
+        filesystem.root["children"]["temporary"] = {
+            "name": "temporary",
+            "type": "file",
+            "owner": "student",
+            "content": "not saved",
+        }
+
+        filesystem.reset()
+
+        self.assertEqual(filesystem.root["children"], {})
+        self.assertEqual(filesystem.current_directory, "/")
+        self.assertEqual(source_path.read_text(encoding="utf-8"), original_contents)
+
+    def test_vfs_commands_save_and_reset(self) -> None:
+        filesystem = VirtualFileSystem.load(Path(__file__).parents[1] / "data/vfs_sample.json")
+        output_stream = io.StringIO()
+        with tempfile.TemporaryDirectory() as directory:
+            save_path = Path(directory) / "command-saved.json"
+            status = execute_command("vfs-save", [str(save_path)], output_stream, filesystem)
+            self.assertIs(status, CommandStatus.CONTINUE)
+            self.assertTrue(save_path.is_file())
+
+        filesystem.root["children"].clear()
+        status = execute_command("vfs-init", [], output_stream, filesystem)
+
+        self.assertIs(status, CommandStatus.CONTINUE)
+        self.assertEqual(filesystem.root["children"], {})
+        self.assertIn("VFS сохранена", output_stream.getvalue())
+        self.assertIn("VFS сброшена", output_stream.getvalue())
+
+    def test_main_reports_invalid_vfs_without_traceback(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            invalid_path = Path(directory) / "invalid.json"
+            invalid_path.write_text("{", encoding="utf-8")
+            output_stream = io.StringIO()
+            error_stream = io.StringIO()
+
+            with patch("sys.stdout", output_stream), patch("sys.stderr", error_stream):
+                status = main(["--vfs", str(invalid_path)])
+
+        self.assertEqual(status, 1)
+        self.assertIn("не удалось прочитать VFS", error_stream.getvalue())
+        self.assertNotIn("Traceback", error_stream.getvalue())
 
 
 if __name__ == "__main__":

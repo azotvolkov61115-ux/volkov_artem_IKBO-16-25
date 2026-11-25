@@ -1,0 +1,13 @@
+{
+    "name": "/",
+    "type": "directory",
+    "owner": "root",
+    "children": {
+        "hello.txt": {
+            "name": "hello.txt",
+            "type": "file",
+            "owner": "student",
+            "content": "Hello from the minimal VFS.\n"
+        }
+    }
+}

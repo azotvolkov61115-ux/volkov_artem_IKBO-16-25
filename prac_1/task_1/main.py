@@ -4,6 +4,7 @@ from typing import Sequence
 
 from commands import CommandStatus
 from config import DEFAULT_VFS_PATH, parse_arguments
+from filesystem import FileSystemError, VirtualFileSystem
 from shell import run_script, run_shell
 
 
@@ -22,15 +23,26 @@ def main(arguments: Sequence[str] | None = None) -> int:
         print(f"Ошибка: стартовый скрипт не найден: {options.script}", file=sys.stderr)
         return 1
 
+    try:
+        filesystem = VirtualFileSystem.load(vfs_path)
+    except FileSystemError as error:
+        print(f"Ошибка: {error}", file=sys.stderr)
+        return 1
+
     vfs_name = Path(vfs_path).stem
     if options.script is not None:
-        script_status = run_script(str(options.script), vfs_name, sys.stdout)
+        script_status = run_script(
+            str(options.script),
+            vfs_name,
+            sys.stdout,
+            filesystem,
+        )
         if script_status is CommandStatus.ERROR:
             return 1
         if script_status is CommandStatus.EXIT:
             return 0
 
-    run_shell(vfs_name=vfs_name)
+    run_shell(vfs_name=vfs_name, filesystem=filesystem)
     return 0
 
 

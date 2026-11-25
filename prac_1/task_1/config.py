@@ -1,8 +1,7 @@
 import argparse
 from pathlib import Path
 
-
-DEFAULT_VFS_PATH = Path(__file__).with_name("vfs.json")
+from filesystem import DEFAULT_VFS_PATH
 
 
 def parse_arguments(arguments: list[str] | None = None) -> argparse.Namespace:

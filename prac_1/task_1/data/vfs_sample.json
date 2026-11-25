@@ -1,0 +1,45 @@
+{
+    "name": "/",
+    "type": "directory",
+    "owner": "root",
+    "children": {
+        "home": {
+            "name": "home",
+            "type": "directory",
+            "owner": "root",
+            "children": {
+                "student": {
+                    "name": "student",
+                    "type": "directory",
+                    "owner": "student",
+                    "children": {
+                        "notes.txt": {
+                            "name": "notes.txt",
+                            "type": "file",
+                            "owner": "student",
+                            "content": "First line\nSecond line\n"
+                        },
+                        "duplicates.txt": {
+                            "name": "duplicates.txt",
+                            "type": "file",
+                            "owner": "student",
+                            "content": "apple\napple\nbanana\napple\n"
+                        }
+                    }
+                },
+                "readme.txt": {
+                    "name": "readme.txt",
+                    "type": "file",
+                    "owner": "root",
+                    "content": "Sample virtual filesystem.\n"
+                }
+            }
+        },
+        "tmp": {
+            "name": "tmp",
+            "type": "directory",
+            "owner": "root",
+            "children": {}
+        }
+    }
+}
