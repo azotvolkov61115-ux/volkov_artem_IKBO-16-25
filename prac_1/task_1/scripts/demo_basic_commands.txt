@@ -1,0 +1,8 @@
+ls
+cd /home/student
+pwd
+ls
+uniq duplicates.txt
+clear
+cd /missing
+exit

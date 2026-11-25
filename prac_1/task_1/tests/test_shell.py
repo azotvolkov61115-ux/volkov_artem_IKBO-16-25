@@ -31,14 +31,18 @@ class CommandParserTests(unittest.TestCase):
 
 class ShellTests(unittest.TestCase):
     def test_shell_commands_and_errors(self) -> None:
-        input_stream = io.StringIO('ls "my folder"\nunknown\nls "unfinished\n\nexit\n')
+        input_stream = io.StringIO('ls /home\nunknown\nls "unfinished\n\nexit\n')
         output_stream = io.StringIO()
+        filesystem = VirtualFileSystem.load(
+            Path(__file__).parents[1] / "data/vfs_sample.json"
+        )
 
-        run_shell(input_stream, output_stream)
+        run_shell(input_stream, output_stream, filesystem=filesystem)
 
         output = output_stream.getvalue()
         self.assertIn("my_vfs:/$ ", output)
-        self.assertIn("ls my folder", output)
+        self.assertIn("student", output)
+        self.assertIn("readme.txt", output)
         self.assertIn("Ошибка: неизвестная команда: unknown", output)
         self.assertIn("Ошибка: незакрытая кавычка", output)
         self.assertNotIn("Traceback", output)
@@ -46,15 +50,18 @@ class ShellTests(unittest.TestCase):
     def test_script_echoes_commands_and_stops_on_first_error(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             script_path = Path(directory) / "commands.txt"
-            script_path.write_text('\nls "a folder"\nunknown\nexit\n', encoding="utf-8")
+            script_path.write_text("\nls /home\nunknown\nexit\n", encoding="utf-8")
             output_stream = io.StringIO()
+            filesystem = VirtualFileSystem.load(
+                Path(__file__).parents[1] / "data/vfs_sample.json"
+            )
 
-            status = run_script(str(script_path), "demo", output_stream)
+            status = run_script(str(script_path), "demo", output_stream, filesystem)
 
         self.assertIs(status, CommandStatus.ERROR)
         output = output_stream.getvalue()
-        self.assertIn('demo:/$ ls "a folder"', output)
-        self.assertIn("ls a folder", output)
+        self.assertIn("demo:/$ ls /home", output)
+        self.assertIn("student", output)
         self.assertIn("Ошибка: неизвестная команда: unknown", output)
         self.assertNotIn("demo:/$ exit", output)
 
@@ -238,6 +245,125 @@ class VirtualFileSystemTests(unittest.TestCase):
         self.assertEqual(status, 1)
         self.assertIn("не удалось прочитать VFS", error_stream.getvalue())
         self.assertNotIn("Traceback", error_stream.getvalue())
+
+
+class BasicFileSystemCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.filesystem = VirtualFileSystem.load(
+            Path(__file__).parents[1] / "data/vfs_sample.json"
+        )
+        self.output = io.StringIO()
+
+    def run_command(self, command: str, *arguments: str) -> CommandStatus:
+        return execute_command(command, arguments, self.output, self.filesystem)
+
+    def test_ls_shows_current_or_requested_directory(self) -> None:
+        status = self.run_command("ls")
+        self.assertIs(status, CommandStatus.CONTINUE)
+        self.assertEqual(self.output.getvalue().splitlines(), ["home", "tmp"])
+
+        self.output = io.StringIO()
+        status = self.run_command("ls", "/home/student")
+        self.assertIs(status, CommandStatus.CONTINUE)
+        self.assertEqual(self.output.getvalue().splitlines(), ["notes.txt", "duplicates.txt"])
+
+    def test_ls_reports_missing_path_and_file(self) -> None:
+        self.assertIs(self.run_command("ls", "/missing"), CommandStatus.ERROR)
+        self.assertIn("путь не найден", self.output.getvalue())
+
+        self.output = io.StringIO()
+        self.assertIs(self.run_command("ls", "/home/readme.txt"), CommandStatus.ERROR)
+        self.assertIn("это не директория", self.output.getvalue())
+
+    def test_cd_changes_path_and_default_returns_to_root(self) -> None:
+        self.assertIs(self.run_command("cd", "/home/student"), CommandStatus.CONTINUE)
+        self.assertEqual(self.filesystem.current_directory, "/home/student")
+
+        self.assertIs(self.run_command("cd", ".."), CommandStatus.CONTINUE)
+        self.assertEqual(self.filesystem.current_directory, "/home")
+
+        self.assertIs(self.run_command("cd"), CommandStatus.CONTINUE)
+        self.assertEqual(self.filesystem.current_directory, "/")
+
+    def test_cd_rejects_files_and_paths_above_root(self) -> None:
+        self.assertIs(self.run_command("cd", "/home/readme.txt"), CommandStatus.ERROR)
+        self.assertIn("это не директория", self.output.getvalue())
+
+        self.output = io.StringIO()
+        self.assertIs(self.run_command("cd", ".."), CommandStatus.ERROR)
+        self.assertIn("выше корня", self.output.getvalue())
+        self.assertEqual(self.filesystem.current_directory, "/")
+
+    def test_pwd_prints_full_current_path(self) -> None:
+        self.filesystem.change_directory("/home/student")
+        self.assertIs(self.run_command("pwd"), CommandStatus.CONTINUE)
+        self.assertEqual(self.output.getvalue(), "/home/student\n")
+
+    def test_uniq_removes_only_adjacent_duplicate_lines(self) -> None:
+        source = self.filesystem.resolve("/home/student/duplicates.txt")
+        original_content = source["content"]
+
+        status = self.run_command("uniq", "/home/student/duplicates.txt")
+
+        self.assertIs(status, CommandStatus.CONTINUE)
+        self.assertEqual(self.output.getvalue(), "apple\nbanana\napple\n")
+        self.assertEqual(source["content"], original_content)
+
+    def test_uniq_reports_missing_paths_and_directories(self) -> None:
+        self.assertIs(self.run_command("uniq", "/missing.txt"), CommandStatus.ERROR)
+        self.assertIn("путь не найден", self.output.getvalue())
+
+        self.output = io.StringIO()
+        self.assertIs(self.run_command("uniq", "/home"), CommandStatus.ERROR)
+        self.assertIn("это не файл", self.output.getvalue())
+
+    def test_clear_writes_terminal_escape_sequence_only_to_terminal(self) -> None:
+        class TerminalOutput(io.StringIO):
+            def isatty(self) -> bool:
+                return True
+
+        terminal = TerminalOutput()
+        self.assertIs(
+            execute_command("clear", [], terminal, self.filesystem),
+            CommandStatus.CONTINUE,
+        )
+        self.assertEqual(terminal.getvalue(), "\033[2J\033[H")
+
+        self.assertIs(self.run_command("clear"), CommandStatus.CONTINUE)
+        self.assertEqual(self.output.getvalue(), "")
+
+    def test_wrong_argument_counts_are_reported(self) -> None:
+        for command, arguments in (
+            ("ls", ("/", "/home")),
+            ("cd", ("/", "/home")),
+            ("pwd", ("/",)),
+            ("uniq", ()),
+            ("uniq", ("/home", "/home")),
+        ):
+            with self.subTest(command=command, arguments=arguments):
+                self.output = io.StringIO()
+                self.assertIs(self.run_command(command, *arguments), CommandStatus.ERROR)
+                self.assertIn("использование", self.output.getvalue())
+
+    def test_demo_script_exercises_commands_and_stops_at_error(self) -> None:
+        script_path = Path(__file__).parents[1] / "scripts/demo_basic_commands.txt"
+        output = io.StringIO()
+
+        status = run_script(
+            str(script_path),
+            "sample",
+            output,
+            self.filesystem,
+        )
+
+        self.assertIs(status, CommandStatus.ERROR)
+        result = output.getvalue()
+        self.assertIn("sample:/$ ls", result)
+        self.assertIn("sample:/home/student$ pwd", result)
+        self.assertIn("/home/student", result)
+        self.assertIn("apple\nbanana\napple\n", result)
+        self.assertIn("Ошибка:", result)
+        self.assertNotIn("sample:/$ exit", result)
 
 
 if __name__ == "__main__":
